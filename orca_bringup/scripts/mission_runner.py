@@ -40,8 +40,9 @@ from geometry_msgs.msg import Point, Pose, PoseStamped
 from nav2_msgs.action import FollowWaypoints
 from orca_msgs.action import TargetMode
 from rclpy.action import ActionClient
-from std_msgs.msg import Header
+from std_msgs.msg import Header, String
 
+import math
 
 class SendGoalResult(Enum):
     SUCCESS = 0     # Goal succeeded
@@ -77,6 +78,57 @@ for _ in range(2):
     delay_loop.poses.append(make_pose(x=10.0, y=-23.0, z=-7.0))
     delay_loop.poses.append(make_pose(x=-10.0, y=-8.0, z=-7.0))
     delay_loop.poses.append(make_pose(x=0.0, y=0.0, z=-7.0))
+
+    
+
+
+def make_grid(goal, x1: float, y1: float, x2: float, y2: float, grid_z: float, spacing: float, num_transects: int):
+    """
+    Makes a grid survey pattern of parallel transects
+    :param FollowWaypoints.Goal: the goal to which this func will append poses
+    :param float x1: x component of start point of first transect
+    :param float y1: y component of start point of first transect
+    :param float x2: x component of end point of first transect
+    :param float y2: y component of end point of first transect
+    :param float z: the depth of the grid survey
+    :param float spacing: distance between transects, positive is to right of first transect
+    :param int num_transects how many to generate 
+    """
+    transect_delta_x = x2 - x1
+    transect_delta_y = y2 - y1
+
+    theta = math.atan2(transect_delta_x, transect_delta_y)
+
+    transit_delta_x = spacing * math.cos(theta)
+    transit_delta_y = -spacing * math.sin(theta)
+
+
+    # lay down the first transect
+    goal.poses.append(make_pose(x=x1, y=y1, z=grid_z))
+    goal.poses.append(make_pose(x=x2, y=y2, z=grid_z))
+
+    current_x = x2
+    current_y = y2
+
+    transect_direction_multiplier = 1.0
+
+    # lay down the remainder of the transects
+    for _ in range(num_transects):
+        current_x += transit_delta_x
+        current_y += transit_delta_y
+        goal.poses.append(make_pose(x=current_x, y=current_y, z=grid_z))
+
+        transect_direction_multiplier *= -1.0
+
+        current_x += transect_direction_multiplier * transect_delta_x
+        current_y += transect_direction_multiplier * transect_delta_y
+        goal.poses.append(make_pose(x=current_x, y=current_y, z=grid_z))
+
+
+grid_pattern = FollowWaypoints.Goal()
+make_grid(grid_pattern, x1=0.0, y1=1.0, x2=5.0, y2=-2.0, grid_z=-7.0, spacing=2.0, num_transects=3)
+
+
 
 
 # Send a goal to an action server and wait for the result.
@@ -134,11 +186,16 @@ def send_goal(node, action_client, send_goal_msg) -> SendGoalResult:
 
             print('Goal canceled')
             return SendGoalResult.CANCELED
+        
+def qr_found_callback(some_node, qr_found_msg):
+    print('Got a qrFound message: "%s"' % qr_found_msg.data)
+    if (qr_found_msg.data == "found it!"):
+        send_goal(node, set_target_mode, go_rov)
 
+node = None
+set_target_mode = None
 
 def main():
-    node = None
-    set_target_mode = None
     follow_waypoints = None
 
     rclpy.init()
@@ -148,11 +205,16 @@ def main():
 
         set_target_mode = ActionClient(node, TargetMode, '/set_target_mode')
         follow_waypoints = ActionClient(node, FollowWaypoints, '/follow_waypoints')
+        #node.create_subscription(String, "qrFound", qr_found_callback, 10)
 
         print('>>> Setting mode to AUV <<<')
         if send_goal(node, set_target_mode, go_auv) == SendGoalResult.SUCCESS:
-            print('>>> Executing mission <<<')
-            send_goal(node, follow_waypoints, delay_loop)
+            print("Grid mission waypoints:")
+            for poseStamped in grid_pattern.poses:
+                print("    {: .2f}, {: .2f}, {: .2f}".format(poseStamped.pose.position.x, poseStamped.pose.position.y, poseStamped.pose.position.z))
+            print('>>> Executing grid mission <<<')
+            #send_goal(node, follow_waypoints, delay_loop)
+            send_goal(node, follow_waypoints, grid_pattern)
 
             print('>>> Setting mode to ROV <<<')
             send_goal(node, set_target_mode, go_rov)
